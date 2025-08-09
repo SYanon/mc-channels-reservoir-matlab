@@ -1,0 +1,100 @@
+# Simulate molecular communication with single phase and constant bit interval
+
+graphics opengl               # Enable OpenGL graphics for visualization
+graphic_iter 1                # Update graphics every iteration
+
+dim 3                                     # Set simulation to 3 dimensions
+boundaries x -BOUNDARYLENGTH BOUNDARYLENGTH  # Define x-axis boundaries
+boundaries y -BOUNDARYLENGTH BOUNDARYLENGTH  # Define y-axis boundaries
+boundaries z -BOUNDARYLENGTH BOUNDARYLENGTH  # Define z-axis boundaries
+
+species Receptor Messenger ReceptorActive  # Define molecular species
+
+difc Receptor DIFFRECEPTOR                 # Diffusion coefficient for Receptor
+difc ReceptorActive DIFFRECEPTORACT        # Diffusion coefficient for ReceptorActive
+difc Messenger DIFFMESSENGER               # Diffusion coefficient for Messenger
+
+color Receptor(all) maroon             # Color Receptor molecules maroon
+color Messenger(all) orange            # Color Messenger molecules orange
+color ReceptorActive(up) fuchsia       # Color active Receptors fuchsia
+
+display_size all(all) 3                # Set default display size for all molecules
+display_size *Active(all) 7            # Set larger display size for active molecules
+
+time_start START_TIME                  # Simulation start time
+time_stop STOP_TIME                    # Simulation end time
+time_step TIME_STEP                    # Simulation time step
+
+frame_thickness 0                      # Remove frame thickness from graphics
+
+# Define the outer boundaries of the simulation space
+start_surface outsides                       
+  unbounded_emitter front Messenger 1 TXPOSITION 0 0    # Define an emitter for Messenger molecules at the transmitter position
+  panel rect +x -BOUNDARYLENGTH -BOUNDARYLENGTH -BOUNDARYLENGTH BOUNDARYLENGTH*2 BOUNDARYLENGTH*2   # Positive x boundary
+  panel rect -x BOUNDARYLENGTH -BOUNDARYLENGTH -BOUNDARYLENGTH BOUNDARYLENGTH*2 BOUNDARYLENGTH*2    # Negative x boundary
+  panel rect +y -BOUNDARYLENGTH -BOUNDARYLENGTH -BOUNDARYLENGTH BOUNDARYLENGTH*2 BOUNDARYLENGTH*2   # Positive y boundary
+  panel rect -y -BOUNDARYLENGTH BOUNDARYLENGTH -BOUNDARYLENGTH BOUNDARYLENGTH*2 BOUNDARYLENGTH*2    # Negative y boundary
+  panel rect +z -BOUNDARYLENGTH -BOUNDARYLENGTH -BOUNDARYLENGTH BOUNDARYLENGTH*2 BOUNDARYLENGTH*2   # Positive z boundary
+  panel rect -z -BOUNDARYLENGTH -BOUNDARYLENGTH BOUNDARYLENGTH BOUNDARYLENGTH*2 BOUNDARYLENGTH*2    # Negative z boundary
+  polygon both edge                         # Render only edges of the panels
+color both green                            # Color the surface green
+end_surface
+
+start_surface receiver                       # Define the receiver surface
+action both all reflect                      # All molecules reflect off this surface
+color both grey                              # Color the receiver surface grey
+polygon both edge                            # Render only edges
+panel sphere TXPOSITION+TXRXDISTANCE 0 0 RXRADIUS 30 30  # Define receiver as a sphere at specific position
+end_surface
+
+start_surface receiverspace                   # Define the receiver space surface (outer sphere)
+action both all transmit                      # All molecules pass through this surface
+polygon both edge                             # Render only edges
+panel sphere TXPOSITION+TXRXDISTANCE 0 0 RXRADIUS+RXRECEPTIONSPACETHICKNESS 30 30  # Sphere larger than receiver, defining the reception space
+end_surface
+
+reaction binding Messenger(fsoln) + Receptor(up) -> ReceptorActive(up) KON  # Binding reaction with rate KON
+reaction unbinding ReceptorActive(up) -> Messenger(fsoln) + Receptor(up)  KOFF  # Unbinding reaction with rate KOFF
+
+start_compartment receiver                   # Define receiver compartment
+surface receiver                             # Associated with receiver surface
+point TXPOSITION+TXRXDISTANCE 0 0            # Position of the receiver
+end_compartment
+
+start_compartment outreceiver                # Define outer receiver compartment
+surface receiverspace                        # Associated with receiverspace surface
+point TXPOSITION+TXRXDISTANCE 0 0            # Position of the outer receiver space
+end_compartment
+
+start_compartment receiverspace              # Define the reception space compartment
+compartment equal outreceiver                # Start with outreceiver compartment
+compartment andnot receiver                  # Subtract receiver compartment to get the space in between
+end_compartment
+
+surface_mol numRECEPTOR Receptor(up) receiver all all    # Place Receptor molecules on receiver surface
+
+reaction_serialnum binding r2                    # Assign serial number r2 to binding reaction
+reaction_serialnum unbinding new + r1            # Assign serial number r1 to unbinding reaction
+product_placement unbinding pgemmax 0.2          # Set geminate recombination max probability
+
+output_files bitsequence_varNo_variableNo_varValue_variableValue_iter_index.txt    # Output file for transmitted bit sequence
+output_files receivedsignal_varNo_variableNo_varValue_variableValue_iter_index.txt # Output file for received signal data
+output_files allmolecules_varNo_variableNo_varValue_variableValue_iter_index.txt   # Output file for all molecule counts
+cmd b overwrite allmolecules_varNo_variableNo_varValue_variableValue_iter_index.txt     # Overwrite molecule counts file at start
+cmd b overwrite receivedsignal_varNo_variableNo_varValue_variableValue_iter_index.txt   # Overwrite received signal file at start
+cmd b overwrite bitsequence_varNo_variableNo_varValue_variableValue_iter_index.txt      # Overwrite bit sequence file at start
+
+cmd i START_TIME STOP_TIME BIT_INTERVAL setflag 0    # At each BIT_INTERVAL, initialize setflag to 0
+cmd i START_TIME STOP_TIME BIT_INTERVAL ifprob BITONE_PROB setflag 1   # With probability BITONE_PROB, setflag to 1 (transmitting bit '1')
+cmd i START_TIME STOP_TIME BIT_INTERVAL ifflag > 0.5 set mol BITONE_MOLCOUNT Messenger TXPOSITION 0 0   # If setflag is 1, release BITONE_MOLCOUNT Messenger molecules
+cmd i START_TIME STOP_TIME BIT_INTERVAL ifflag > 0.5 evaluate bitsequence_varNo_variableNo_varValue_variableValue_iter_index.txt 1  # Record bit '1' in bitsequence file
+cmd i START_TIME STOP_TIME BIT_INTERVAL ifflag < 0.5 set mol BITZERO_MOLCOUNT Messenger TXPOSITION 0 0  # If setflag is 0, release BITZERO_MOLCOUNT Messenger molecules
+cmd i START_TIME STOP_TIME BIT_INTERVAL ifflag < 0.5 evaluate bitsequence_varNo_variableNo_varValue_variableValue_iter_index.txt 0  # Record bit '0' in bitsequence file
+
+cmd b molcountheader allmolecules_varNo_variableNo_varValue_variableValue_iter_index.txt   # Initialize molecule counts file with header
+cmd N SAMPLING_PERIOD molcountincmpt2 receiverspace soln receivedsignal_varNo_variableNo_varValue_variableValue_iter_index.txt  # Record molecule counts in receiverspace and solution at intervals
+cmd N SAMPLING_PERIOD molcount allmolecules_varNo_variableNo_varValue_variableValue_iter_index.txt    # Record total molecule counts at intervals
+
+text_display time Receptor(up) Messenger ReceptorActive(up)    # Display time and molecule counts during simulation
+
+end_file    # End of Smoldyn script
