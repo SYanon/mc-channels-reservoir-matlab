@@ -1,892 +1,359 @@
-%% Initialize the MATLAB environment
-close all   % Close all open figure windows
-clear       % Clear all variables from the workspace
+% =========================================================================
+% narma_stochastic_sweep.m
+%
+% DESCRIPTION:
+%   A modular script to perform a two-parameter sweep comparing the
+%   deterministic and stochastic (Smoldyn) models for the NARMA10 benchmark.
+%   Sweeps over k_on vs. k_off.
+% =========================================================================
 
-rng(0); % IMPORTANT TO FIX THE RANDOM SEQUENCE (both for numerical and Smoldyn)
+%% 0. Initialize Environment & Define Configuration
+close all;
+clear;
+rng(0); % Set random seed for reproducibility
+fprintf('Starting MODULAR Stochastic NARMA10 parameter sweep...\n');
 
-smold = 1; % enable cases where new Smoldyn sim is run, or Smoldyn data is read.
-smold_only_data = 1; % only Smoldyn data is read without running a new sim, thereby requiring datadirname for smoldyn data
-datadirname = 'NARMA_5000_T1_koff1'; % only meaningful if smold = 1 && smold_only_data = 1
+% --- Central Configuration Struct ---
+config = get_default_config();
 
-movmean_on = 1; % = 0 by default
-movmean_window = 2000; % only meaningful if movmean_on = 1 % SHOULD RUN ONLY OVER THE PAST VALUES.
-memorywindowlength = 1; % = 1 by default
-movmean_readout_test = 0; % = 0 by default
-movmean_readout_test_window = 5; % only meaningful if movmean_readout_test = 1
+%% 1. Generate Data (Done ONCE)
+% Generate the NARMA10 series and prepare all necessary data splits.
+fprintf('Generating NARMA10 data series...\n');
+narma_data = generate_narma10_data(config);
+fprintf('Data generation complete.\n');
 
-plot_in_loop = false;   % set to true to see intermediate loop figures
+%% 2. Prepare for Sweep
+nP1 = length(config.param1_values);
+nP2 = length(config.param2_values);
+results = initialize_results_struct(nP1, nP2);
 
+p1_name = config.param1_name;
+p1_vals = config.param1_values;
+p2_name = config.param2_name;
+p2_vals = config.param2_values;
 
-%% Primary & Secondary Swept Parameters
-param1_name   = 'movmean_window';      % e.g. 'Nres_init', 'num_train_points', 'T', ...
-%param1_values = [1, 100, 200, 500, 1000, 2000];
-param1_values = [1, 100, 200];
+%% 3. Main Parameter Sweep Loop
+fprintf('Starting sweep over "%s" and "%s"...\n', p1_name, p2_name);
+total_runs = nP1 * nP2;
+for i2 = 1:nP2
+    for i1 = 1:nP1
+        tic;
+        
+        % --- Update parameters for the current run ---
+        run_config = config;
+        run_config.(p2_name) = p2_vals(i2);
+        run_config.(p1_name) = p1_vals(i1);
+        
+        current_run = (i2-1)*nP1 + i1;
+        
+        % =================== NUMERICAL (DETERMINISTIC) MODEL ===================
+        [sim, reservoir_states_num] = run_channel_simulation(narma_data.u, run_config);
+        W_out_num = train_readout(reservoir_states_num, narma_data.train_target, run_config);
+        [~, nrmse_test_num, y_test_hat_num] = test_readout(W_out_num, reservoir_states_num, narma_data, run_config);
+        
+        % =================== STOCHASTIC (SMOLDYN) MODEL ===================
+        [reservoir_states_smol_raw, success] = load_smoldyn_data(run_config);
+        
+        if success
+            reservoir_states_smol_filtered = apply_signal_filter(reservoir_states_smol_raw, run_config);
+            W_out_smol = train_readout(reservoir_states_smol_filtered, narma_data.train_target, run_config);
+            [~, nrmse_test_smol, y_test_hat_smol] = test_readout(W_out_smol, reservoir_states_smol_filtered, narma_data, run_config);
+        else
+            fprintf('    -> WARNING: Smoldyn data not found for Run (%d/%d). Skipping.\n', current_run, total_runs);
+            nrmse_test_smol  = NaN;
+        end
 
-param2_name   = 'Nres_init';   % e.g. 'Nres_init', 'num_train_points', 'T', ...
-%param2_values = [1, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9, 1e-10, 1e-11, 1e-12];
-param2_values = [5, 10, 50, 100];
+        %% 7. Store Results
+        results.nrmse_test_num(i1, i2)  = nrmse_test_num;
+        results.nrmse_test_smol(i1, i2)  = nrmse_test_smol;
 
-%param2_values = [ 1e-8, 1e-9, 1e-10, 1e-11];
-%param2_values = [1e-12];
+        fprintf('Run (%d/%d): %s=%g, %s=%g -> NRMSE(Num)=%.3g, NRMSE(Smol)=%.3g. (took %.2fs)\n', ...
+                current_run, total_runs, p1_name, run_config.(p1_name), p2_name, run_config.(p2_name), ...
+                nrmse_test_num, nrmse_test_smol, toc);
+                
+        %% Optional: Plotting inside the loop
+        if run_config.plot_in_loop
+            run_info.current_run = current_run;
+            run_info.total_runs = total_runs;
+            run_info.p1_name = p1_name; run_info.p1_val = run_config.(p1_name);
+            run_info.p2_name = p2_name; run_info.p2_val = run_config.(p2_name);
+            run_info.smol_dt = run_config.smol_dt;
+            
+            num_results.y_test_hat = y_test_hat_num;
+            smol_results.states_raw = reservoir_states_smol_raw;
+            if success, smol_results.y_test_hat = y_test_hat_smol; else, smol_results.y_test_hat = []; end
 
-%% 1. Parameter Setup
-% Receptor and binding parameters
-N = 500;                % Total number of receptors at the receiver
-k_on = 1e-18;          % Binding rate constant (in 1/(M*s))
-k_off = 1;            % Unbinding rate constant (in 1/s)
-KD = k_off / k_on;   % Dissociation constant
-
-% Time parameters
-T = 1;                   % Symbol duration (seconds)
-
-% Data lengths
-washout1 = 250;          % Number of symbols to wash out before training
-num_train_points = 2000;  % Number of symbols used for training
-wheretostarttest = 2500;
-washout2 = wheretostarttest-(washout1+num_train_points);          % Number of symbols to wash out before testing
-num_test_points = 2000;   % Number of symbols used for testing
-
-% % Data lengths
-% washout1 = 20;          % Number of symbols to wash out before training
-% num_train_points = 30;  % Number of symbols used for training
-% wheretostarttest = 100;
-% washout2 = wheretostarttest-(washout1+num_train_points);          % Number of symbols to wash out before testing
-% num_test_points = 30;   % Number of symbols used for testing
-
-% % Data lengths
-% washout1 = 250;          % Number of symbols to wash out before training
-% num_train_points = 50;  % Number of symbols used for training
-% wheretostarttest = 350;
-% washout2 = wheretostarttest-(washout1+num_train_points);          % Number of symbols to wash out before testing
-% num_test_points = 50;   % Number of symbols used for testing
-
-
-num_tot_points = washout1 + washout2 + num_train_points + num_test_points;  % Total number of symbols
-
-% Communication channel parameters
-distance = 10e-6;        % Distance between transmitter and receiver (10 microns)
-D = 1e-11;               % Diffusion coefficient (in m^2/s)
-
-% Input normalization parameters
-N_min = 100;            % Minimum value for input normalization
-N_max = 3000;           % Maximum value for input normalization
-
-% Regularization and reservoir parameters
-lambda = 1e-10;          % Regularization parameter for training
-lambda_smol = 1;     % Regularization parameter for training for Smoldyn data (NO regularization for stochastic data seems best)
-
-Nres_init = 100;               % Number of reservoir nodes
-Nres = Nres_init * memorywindowlength;
-
-% Step size control
-dt = 0.001;  % Time step for deterministic/numerical analysis %fixed
-
-memlengthsweep = 100;
-Tpeak = distance^2/(6*D);
-memory_length = round((memlengthsweep * Tpeak)/T)*T; % memory of MC channel
-offset = 0;  % if you have an offset param, update above
-
-
-%% 2D arrays to store results:
-nP1 = length(param1_values);
-nP2 = length(param2_values);
-
-nrmse_train_NUM_array                              = zeros(nP1, nP2);
-nrmse_test_NUM_array                               = zeros(nP1, nP2);
-nrmse_train_SMOL_array                              = zeros(nP1, nP2);
-nrmse_test_SMOL_array                               = zeros(nP1, nP2);
-
-% ---- NEW array to hold correlation time from the reservoir samples ----
-
-%% Automatic log-scale checks
-minP1   = min(param1_values);
-maxP1   = max(param1_values);
-ratioP1 = maxP1 / minP1;
-useLogX = (minP1>0) && (ratioP1>50);
-
-minP2   = min(param2_values);
-maxP2   = max(param2_values);
-ratioP2 = maxP2 / minP2;
-useLogY = (minP2>0) && (ratioP2>50);
-
-
-%% 2. Generate the NARMA10 Time Series (Only ONCE)
-
-tic
-% We need (num_tot_points + 1) final data points, plus 10 warmup.
-narma_len = num_tot_points + 10 + 1;   % +10 warmup, +1 so we have pairs for next-step
-
-
-% Random input in [0, 0.5]
-u = 0.5 * rand(narma_len, 1);
-
-% Pre-allocate the NARMA output
-q = zeros(narma_len, 1);
-
-% Compute q(n) for NARMA10 system
-for n = 10:num_tot_points-1
-    q(n+1) = 0.3 * q(n) + 0.05 * q(n) * sum(q(n-9:n)) + 1.5 * u(n-9) * u(n) + 0.1;
+            plot_interim_results(sim, narma_data, num_results, smol_results, run_info);
+        end
+    end
 end
 
-toc
+%% 8. Visualize Results
+fprintf('Sweep complete. Generating plots...\n');
+plot_sweep_results(results, config);
+fprintf('All done.\n');
 
-for i2 = 1:nP2
-    val2 = param2_values(i2);
+%==========================================================================
+%                    --- LOCAL HELPER FUNCTIONS ---
+%==========================================================================
 
-    % Assign param2 (outer loop) to correct variable
-    switch param2_name
-        case 'washout1'
-            washout1 = val2;
-        case 'num_train_points'
-            num_train_points = val2;
-        case 'wheretostarttest'
-            wheretostarttest = val2;
-            washout2 = wheretostarttest - (washout1 + num_train_points);
-        case 'washout2'
-            washout2 = val2;
-        case 'num_test_points'
-            num_test_points = val2;
-        case 'offset'
-            offset = val2;
-        case 'lambda'
-            lambda = val2;
-        case 'lambda_smol'
-            lambda_smol = val2;
-        case 'movmean_window'
-            movmean_window = val2;
-        case 'movmean_readout_test_window'
-            movmean_readout_test_window = val2;
-        case 'Nres_init'
-            Nres_init = val2;
-            Nres = Nres_init * memorywindowlength;
-        case 'memorywindowlength'
-            memorywindowlength = val2;
-            Nres = Nres_init * memorywindowlength;
-        case 'memlengthsweep'
-            memlengthsweep = val2;
-            memory_length = round((memlengthsweep * Tpeak)/T)*T;
-        otherwise
-            error('Parameter2 name (%s) not recognized.', param2_name);
+function config = get_default_config()
+    % Central location for all default parameters.
+    
+    % --- MODIFIED: Swept Parameters ---
+    config.param1_name   = 'k_on';
+    config.param1_values = [5e-20, 1e-19, 2e-19, 5e-19, 1e-18, 2e-18, 5e-18, 1e-17, 2e-17];
+    config.param2_name   = 'k_off';
+    config.param2_values = [0.1, 0.2, 0.5, 1, 2, 5, 10];
+    
+    % --- Stochastic Model Settings ---
+    config.smoldyn_data_dir = 'NARMA_5000_T1_koff1'; 
+    config.movmean_on = true;
+    config.movmean_window = 2000; % Fixed config option
+    config.lambda_smol = 1.0; 
+
+    % --- Reservoir & Readout ---
+    config.Nres_init = 100; % Fixed config option
+    config.memorywindowlength = 1;
+    config.Nres = config.Nres_init * config.memorywindowlength;
+    config.lambda = 1e-10; 
+
+    % --- Fixed System Parameters ---
+    config.N     = 500;
+    config.k_on  = 1e-18; % Default value, will be overwritten by sweep
+    config.k_off = 1;     % Default value, will be overwritten by sweep
+    config.N_min = 100;
+    config.N_max = 3000;
+    config.distance = 10e-6;
+    config.D        = 1e-11;
+    config.T  = 1;
+    
+    % --- Data Lengths ---
+    config.washout1         = 250;
+    config.num_train_points = 2000;
+    config.wheretostarttest = 2500;
+    config.num_test_points  = 2000;
+    config.washout2 = config.wheretostarttest - (config.washout1 + config.num_train_points);
+    config.num_tot_points = config.washout1 + config.washout2 + config.num_train_points + config.num_test_points;
+    
+    % --- Simulation Control ---
+    config.dt = 0.001;
+    config.smol_dt = 0.01;
+    config.memlengthsweep = 100;
+    config.plot_in_loop = false;
+end
+
+%--------------------------------------------------------------------------
+function narma_data = generate_narma10_data(config)
+    % Generates the NARMA10 time series and prepares all necessary data splits.
+    narma_len = config.num_tot_points + 10 + 1;
+    u = 0.5 * rand(narma_len, 1);
+    q = zeros(narma_len, 1);
+    
+    for n = 10:(config.num_tot_points - 1)
+        q(n+1) = 0.3*q(n) + 0.05*q(n)*sum(q(n-9:n)) + 1.5*u(n-9)*u(n) + 0.1;
+    end
+    
+    narma_data.u = u;
+    narma_data.q = q;
+    
+    train_indices = (config.washout1+2) : (config.washout1+config.num_train_points+1);
+    test_indices = (config.washout1+config.num_train_points+config.washout2+2) : (config.num_tot_points+1);
+    
+    narma_data.train_target = q(train_indices);
+    narma_data.test_target = q(test_indices);
+end
+
+%--------------------------------------------------------------------------
+function [sim, reservoir_states] = run_channel_simulation(u_series, config)
+    % This is the deterministic (numerical) model simulation.
+    N_i = config.N_min + (u_series - min(u_series)) / (max(u_series) - min(u_series)) * (config.N_max - config.N_min);
+    t_total = length(N_i) * config.T;
+    sim.time = 0:config.dt:t_total;
+    sim.concentration = zeros(size(sim.time));
+    Tpeak = config.distance^2 / (6 * config.D);
+    memory_length = round((config.memlengthsweep * Tpeak) / config.T) * config.T;
+    
+    for iSym = 1:length(N_i)
+        t_start = (iSym - 1) * config.T;
+        t_end   = t_start + memory_length;
+        idx_start = floor(t_start / config.dt) + 2;
+        idx_end   = ceil(t_end / config.dt) + 1;
+        idxRange  = idx_start:min(idx_end, length(sim.time));
+        t_local = sim.time(idxRange) - t_start;
+        pulse = (N_i(iSym) ./ ((4*pi*config.D*t_local).^(3/2))) .* exp(-config.distance^2./(4*config.D*t_local));
+        sim.concentration(idxRange) = sim.concentration(idxRange) + pulse;
     end
 
-    for i1 = 1:nP1
-        tic
-        val1 = param1_values(i1);
-
-
-        % Assign param1 (inner loop) to correct variable
-        switch param1_name
-            case 'washout1'
-                washout1 = val1;
-            case 'num_train_points'
-                num_train_points = val1;
-            case 'wheretostarttest'
-                wheretostarttest = val1;
-                washout2 = wheretostarttest - (washout1 + num_train_points);
-            case 'washout2'
-                washout2 = val1;
-            case 'num_test_points'
-                num_test_points = val1;
-            case 'offset'
-                offset = val1;
-            case 'lambda'
-                lambda = val1;
-            case 'lambda_smol'
-                lambda_smol = val1;
-            case 'movmean_window'
-                movmean_window = val1;
-            case 'movmean_readout_test_window'
-                movmean_readout_test_window = val1;
-            case 'Nres_init'
-                Nres_init = val1;
-                Nres = Nres_init * memorywindowlength;
-            case 'memorywindowlength'
-                memorywindowlength = val1;
-                Nres = Nres_init * memorywindowlength;
-            case 'memlengthsweep'
-                memlengthsweep = val1;
-                memory_length = round((memlengthsweep * Tpeak)/T)*T;
-            otherwise
-                error('Parameter1 name (%s) not recognized.', param1_name);
-        end
-
-        num_tot_points = washout1 + washout2 + num_train_points + num_test_points;
-
-        % Normalize input u(n) to obtain N_i values
-        N_i = N_min + (u - min(u)) / (max(u) - min(u)) * (N_max - N_min);
-
-        %% 6. Generate Time Vector
-        t_total = length(N_i) * T;      % Total simulation time
-        t_values = 0:dt:t_total;           % Time vector from 0 to t_total with step dt
-
-        % Number of time steps per symbol duration
-        steps_per_symbol = T / dt;
-
-        %% 7. Pre-allocate Concentration and Receptor Occupation Vectors
-        c_values = zeros(size(t_values));  % Pre-allocate concentration vector
-        n_values = zeros(size(t_values));  % Pre-allocate receptor occupation vector
-
-        % Initial condition for receptor occupation
-        n_values(1) = 0;  % No bound receptors at time t = 0
-
-        %% 8. Compute Ligand Concentration c(t) at the Receiver
-
-        % Compute concentration c(t) considering memory effect
-        %for i = 1:num_tot_points - predictlength
-        for i = 1:length(N_i)
-
-            t_symbol_start = (i - 1) * T;            % Start time of current symbol
-            t_memory_end = t_symbol_start + memory_length;  % End time of memory window
-
-            % Find indices within the memory window
-            indices = find(t_values > t_symbol_start & t_values <= t_memory_end);
-
-            % Calculate the concentration due to this symbol within the memory window
-            for j = indices'
-                t = t_values(j) - t_symbol_start;  % Time since symbol transmission
-                c_values(j) = c_values(j) + (N_i(i) ./ ((4 * pi * D * t).^(3/2))) .* ...
-                    exp(-distance^2 ./ (4 * D * t));
-            end
-        end
-
-        %% 9. Simulate Receptor Binding Process Using Euler's Method
-        % Simulate receptor dynamics over time
-        for i = 2:length(t_values)
-            c_t = c_values(i - 1);  % Concentration at previous time step
-            n_t = n_values(i - 1);  % Number of bound receptors at previous time step
-
-            % Differential equation for receptor binding dynamics
-            dn_dt = k_on * (N - n_t) * c_t - k_off * n_t;
-
-            % Update the number of bound receptors
-            n_values(i) = n_t + dn_dt * dt;
-        end
-
-        % Normalize receptor occupation to obtain average occupation ratio [0, 1]
-        n_values = n_values / N;
-
-        if plot_in_loop
-            % Plot the average number of bound receptors over time
-            figure('Position',[400 400 1200 400]);  % [left bottom width height]
-            plot(t_values, n_values, 'LineWidth', 2);
-            xlabel('Time (s)');
-            ylabel('<n(t)> - Average Number of Bound Receptors');
-            title('Average Number of Bound Receptors vs. Time');
-            grid on;
-
-
-            % Plot the ligand concentration c(t) over time at the receiver
-            figure('Position',[400 400 1200 400]);  % [left bottom width height]
-            plot(t_values, c_values, 'LineWidth', 2);
-            xlabel('Time (s)');
-            ylabel('c(t) - Ligand Concentration');
-            title('Ligand Concentration vs. Time at the Receiver');
-            grid on;
-        end
-
-        %% 10. Training Phase
-        % Initialize matrix to store sampled values for training
-        sampled_matrix = zeros(Nres, num_train_points);
-
-        sample_indices_to_be_deleted = [];
-
-        % Sampling the number of bound receptors for the training set
-        for i = washout1 + 1 : washout1 + num_train_points
-            t_symbol_start = (i - 1) * T + offset;  % Start time with offset
-            start_idx = find(t_values >= t_symbol_start, 1);  % Find corresponding index
-
-            % Generate indices for sampling within the symbol duration
-            sample_indices = start_idx - (memorywindowlength-1) * steps_per_symbol + (0:Nres - 1) * (steps_per_symbol / Nres) * memorywindowlength; % NEW2
-
-            % Ensure indices are within bounds
-            sample_indices(sample_indices > length(t_values)) = [];
-
-            if length(sample_indices) >= Nres % NEW - offset control - eliminate the responses that are partially complete due to offset shift
-                sampled_matrix(:, i - washout1) = n_values(sample_indices(1:Nres));
-            else
-                %sampled_matrix(:, i - washout1) = [];
-                sample_indices_to_be_deleted = [sample_indices_to_be_deleted i - washout1];
-
-            end
-
-        end
-
-        sampled_matrix(:, sample_indices_to_be_deleted) = [];
-
-        % % Plot sample receptor occupation profiles from the training set
-        % figure;
-        % subplot(2, 2, 1);
-        % plot(sampled_matrix(:, 1));
-        % title('Sample 1');
-        % subplot(2, 2, 2);
-        % plot(sampled_matrix(:, floor(end * 0.4)));
-        % %plot(sampled_matrix(1:end-1, 2));
-        % title('Sample 40%');
-        % subplot(2, 2, 3);
-        % plot(sampled_matrix(:, floor(end * 0.8)));
-        % %plot(sampled_matrix(1:end-1, 3));
-        % title('Sample 80%');
-        % subplot(2, 2, 4);
-        % plot(sampled_matrix(1:end-1, end));
-        % title('Sample End');
-
-
-        sampled_matrix = [sampled_matrix; ones(1, size(sampled_matrix, 2))];
-
-        % Prepare target output for training (shifted q(n))
-        q_train = q(washout1+2:washout1+num_train_points+1)';  % Column vector
-        q_train = q_train(:);
-
-        % Transpose sampled_matrix for regression
-        sampled_matrix = sampled_matrix';
-
-        W_out = pinv(sampled_matrix' * sampled_matrix + lambda * eye(size(sampled_matrix, 2))) ...
-            * (sampled_matrix' * q_train);
-
-        % Display the calculated weights
-        %disp('Calculated Weights W_out:');
-        %disp(W_out);
-
-        % Calculate the estimated output y_train_hat for training data
-
-        q_train_hat = sampled_matrix * W_out;
-
-        if plot_in_loop
-            % Plot the original and estimated target values
-            figure('Position',[400 400 1200 400]);  % [left bottom width height]
-            plot(q_train(1:end-2), 'b-o', 'LineWidth', 2, 'MarkerSize', 6);  % Original target values
-            hold on;
-            plot(q_train_hat(1:end-2), 'r-', 'LineWidth', 2);                % Estimated target values
-            xlabel('Index');
-            ylabel('Target and Estimated Values');
-            title('Training Data: Original and Estimated Targets');
-            legend('Original Target', 'Estimated Target');
-            grid on;
-            set(gca, 'XTick', []);
-        end
-
-        %% 11. Compute NRMSE for Training Data
-
-        rmse_train = sqrt(mean((q_train_hat(1:end-2) - q_train(1:end-2)).^2));
-        nrmse_train = rmse_train / std(q_train(1:end-2));
-
-        % Display result
-        %disp(['NRMSE (Training): ', num2str(nrmse_train)]);
-        %disp(['NMSE (Training): ', num2str(nmse_train)]);
-
-        %% 12. Testing Phase
-        % Initialize matrix to store sampled values for testing
-        sampled_matrix_test = zeros(Nres, num_test_points);
-        sample_indices_to_be_deleted = [];
-
-        % Sampling the number of bound receptors for the testing set
-        for i = washout1 + num_train_points + washout2 + 1 : num_tot_points
-            t_symbol_start = (i - 1) * T + offset;  % Start time with offset
-            start_idx = find(t_values >= t_symbol_start, 1);  % Find corresponding index
-
-            % Generate indices for sampling within the symbol duration
-            sample_indices = start_idx - (memorywindowlength-1) * steps_per_symbol + (0:Nres - 1) * (steps_per_symbol / Nres) * memorywindowlength;
-
-            % Ensure indices are within bounds
-            sample_indices(sample_indices > length(t_values)) = [];
-
-            if length(sample_indices) >= Nres % NEW - offset control - eliminate the responses that are partially complete due to offset shift
-                sampled_matrix_test(:, i - (washout1 + num_train_points + washout2)) = n_values(sample_indices(1:Nres));
-            else
-                %sampled_matrix_test(:, i - (washout1 + num_train_points + washout2)) = [];
-                sample_indices_to_be_deleted = [sample_indices_to_be_deleted i - (washout1 + num_train_points + washout2)];
-            end
-        end
-
-        sampled_matrix_test(:, sample_indices_to_be_deleted) = [];
-
-        % % Plot sample receptor occupation profiles from the testing set
-        % figure;
-        % subplot(2, 2, 1);
-        % plot(sampled_matrix_test(:, 1));
-        % title('Sample 1');
-        % subplot(2, 2, 2);
-        % plot(sampled_matrix_test(:, floor(end * 0.4)));
-        % title('Sample 40%');
-        % subplot(2, 2, 3);
-        % plot(sampled_matrix_test(:, floor(end * 0.8)));
-        % title('Sample 80%');
-        % subplot(2, 2, 4);
-        % plot(sampled_matrix_test(:, end));
-        % title('Sample End');
-
-        sampled_matrix_test = [sampled_matrix_test; ones(1, size(sampled_matrix_test, 2))];
-
-        % Transpose for computation
-        sampled_matrix_test = sampled_matrix_test';
-
-        % Prepare target output for testing (shifted q(n))
-        q_test = q(washout1 + num_train_points + washout2 +2:num_tot_points+1)';  % Column vector
-        q_test = q_test(:);
-
-        % Calculate the estimated output y_test_hat for testing data
-        q_test_hat = sampled_matrix_test * W_out;
-
-        %% 13. Compute NRMSE for Testing Data
-
-        rmse_test = sqrt(mean((q_test_hat(1:end-2) - q_test(1:end-2)).^2));
-        nrmse_test = rmse_test / std(q_test(1:end-2));
-
-        if plot_in_loop
-            % Plot the original and estimated target values for testing data
-            figure('Position',[400 400 1200 400]);  % [left bottom width height]
-            plot(q_test(1:end-2), 'b-o', 'LineWidth', 2, 'MarkerSize', 6);  % Original target values
-            hold on;
-            plot(q_test_hat(1:end-2), 'r-', 'LineWidth', 2);                        % Estimated target values
-            xlabel('Index');
-            ylabel('Target and Estimated Values');
-            title('Testing Data: Original and Estimated Targets');
-            legend('Original Target', 'Estimated Target');
-            grid on;
-            set(gca, 'XTick', []);
-        end
-
-        %% --- Save results ---
-        nrmse_train_NUM_array(i1, i2) = nrmse_train;
-        nrmse_test_NUM_array(i1, i2)  = nrmse_test;
-
-        fprintf('%s=%g, %s=%g -> NRMSE-NUM(Tr)=%.3g, NRMSE-NUM(Te)=%.3g\n',...
-            param1_name, val1, param2_name, val2, nrmse_train, nrmse_test);
-
-        if smold == 0
-            continue
-        end
-
-
-        %% SMOLDYN
-        %% Initialization
-        % Start a timer
-
-
-
-        %% Set Simulation Parameters
-
-        % Number of iterations for Monte Carlo simulation
-        numIterations = 1; % number of iterations for Monte Carlo
-
-        % Reaction rates and diffusion coefficients
-        KON = k_on*1e18;               % On rate constant
-        KOFF = k_off;             % Off rate constant
-        DIFFMESSENGER = D*1e12;     % Diffusion coefficient of messenger molecules
-        DIFFRECEPTOR = 0;       % Diffusion coefficient of receptors
-        DIFFRECEPTORACT = 0;    % Diffusion coefficient of activated receptors
-
-        % Simulation time parameters
-        START_TIME = 0;         % Simulation start time
-        BIT_INTERVAL = T;           % Time interval between bits
-        STOP_TIME = START_TIME + length(N_i)*BIT_INTERVAL;
-        %disp(['Smoldyn Simulation Stop Time: ', num2str(STOP_TIME)]);
-        TIME_STEP = 0.01;       % Simulation time step
-        SAMPLING_PERIOD = 1;           % Sampling period in terms of time steps
-
-        % Receptor parameters
-        numRECEPTOR = N;          % Number of receptors
-
-        % Spatial parameters
-        TXRXDISTANCE = distance*1e6;          % Distance between transmitter and receiver
-        BOUNDARYLENGTH = 25;       % Length of the boundary
-        TXPOSITION = -10;           % Position of the transmitter
-        RXRADIUS = 3;               % Radius of the receiver
-        RXRECEPTIONSPACETHICKNESS = 0.2; % Thickness of the receiver reception space
-
-        %% Create Smoldyn Configuration
-        % This creates the .txt smoldyn configuration file that will generate MG
-        % series in accordance with the parametetrs above.
-        input_time_points = START_TIME:BIT_INTERVAL:STOP_TIME-eps*1e10;
-        %generateSimConfig2(N_i, input_time_points)
-
-
-        %% Create Time-Stamped Directory for Simulation Input and Output Files
-
-        % Generate a directory name with the current date and time
-        dirname = sprintf('sample_%s/', datestr(now,'mm-dd-yyyy--HH-MM-SS'));
-        % Create the directory
-        %mkdir(dirname)
-
-        % Copy the Smoldyn execution file to the new directory
-        %status = copyfile('MCpointTXsphRX_generated.txt', dirname);  % copy Smoldyn execution file
-        % if ~status
-        %     disp('Smoldyn execution file could not be copied to new directory.')
-        %     return
-        % end
-        %% Define Variables for Parameter Sweep
-
-        % Create an array of variable names for parameters
-        variableNameArray = [...
-            "KON",...                            % 1
-            "KOFF",...                           % 2
-            "DIFFMESSENGER",...                  % 3
-            "DIFFRECEPTOR",...                   % 4
-            "DIFFRECEPTORACT",...                % 5
-            "START_TIME",...                     % 6
-            "STOP_TIME",...                      % 7
-            "TIME_STEP",...                      % 8
-            "BIT_INTERVAL",...                   % 9
-            "numRECEPTOR",...                    % 10
-            "TXRXDISTANCE",...                   % 11
-            "BOUNDARYLENGTH",...                 % 12
-            "TXPOSITION",...                     % 13
-            "RXRADIUS",...                       % 14
-            "RXRECEPTIONSPACETHICKNESS",...      % 15
-            "SAMPLING_PERIOD"...                 % 16
-            ];
-
-        variableNo = 2;           % Choose which parameter to sweep (index in variableNameArray)
-        variableValues = KOFF;    % Specify the parameter values to simulate
-
-        %% Run Smoldyn Simulations
-
-        for j = 1:numel(variableValues)
-            % Assign the current variable value to the parameter being swept
-            assignin('base', variableNameArray(variableNo), variableValues(j));
-            for i = 1:numIterations
-                % Build the command to run Smoldyn with the current parameters
-                % If you want to visualize the simulation, replace -wt with -w
-                % (but it becomes much more computationally demanding)
-                command = sprintf(['smoldyn %sMCpointTXsphRX_generated.txt -wt -s ', ...
-                    '--define index=%d ', ...
-                    '--define variableNo=%d ', ...
-                    '--define variableValue=%d ', ...
-                    '--define KON=%d ', ...
-                    '--define KOFF=%d ', ...
-                    '--define DIFFMESSENGER=%d ', ...
-                    '--define DIFFRECEPTOR=%d ', ...
-                    '--define DIFFRECEPTORACT=%d ', ...
-                    '--define START_TIME=%d ', ...
-                    '--define STOP_TIME=%d ', ...
-                    '--define TIME_STEP=%d ', ...
-                    '--define BIT_INTERVAL=%d ', ...
-                    '--define numRECEPTOR=%d ', ...
-                    '--define TXRXDISTANCE=%d ', ...
-                    '--define BOUNDARYLENGTH=%d ', ...
-                    '--define TXPOSITION=%d ', ...
-                    '--define RXRADIUS=%d ', ...
-                    '--define RXRECEPTIONSPACETHICKNESS=%d ', ...
-                    '--define SAMPLING_PERIOD=%d '], ...
-                    dirname, i, variableNo, variableValues(j), KON, KOFF, DIFFMESSENGER, ...
-                    DIFFRECEPTOR, DIFFRECEPTORACT, START_TIME, STOP_TIME, TIME_STEP, BIT_INTERVAL, numRECEPTOR, ...
-                    TXRXDISTANCE, BOUNDARYLENGTH, TXPOSITION, RXRADIUS, RXRECEPTIONSPACETHICKNESS, SAMPLING_PERIOD);
-
-                % Execute the Smoldyn command
-                if smold_only_data ~= 1
-                    system(command);
-                end
-            end
-        end
-
-        %% Read Simulation Results
-
-        if smold_only_data == 1
-            dirname = sprintf('%s/', datadirname); % CHECK!
-        end
-
-        % Initialize cell arrays to store the data
-        received_signals = cell(numel(variableValues), numIterations);
-        times1 = cell(numel(variableValues), numIterations);
-        ReceptorActives = cell(numel(variableValues), numIterations);
-        times2 = cell(numel(variableValues), numIterations);
-        bitsequences = cell(numel(variableValues), numIterations);
-
-        for j = 1:numel(variableValues)
-            % Assign the current variable value to the parameter being swept
-            assignin('base', variableNameArray(variableNo), variableValues(j));
-
-            for k = 1:numIterations
-                %fprintf('varName = %s -- varValue = %d -- numIter = %d \n', variableNameArray(variableNo), variableValues(j), k);
-
-                % Read the received signal data
-                receivedSignalFilename = sprintf('%sreceivedsignal_varNo_%d_varValue_%d_iter_%d.txt', dirname, variableNo, variableValues(j), k);
-                data1 = importdata(receivedSignalFilename,' ');
-                received_signals{j, k} = data1(:, 3);   % The third column is the received signal
-                times1{j, k} = data1(:, 1);             % The first column is time
-
-                % Read all molecules data
-                allMoleculesFilename = sprintf('%sallmolecules_varNo_%d_varValue_%d_iter_%d.txt', dirname, variableNo, variableValues(j), k);
-                data2_temp = importdata(allMoleculesFilename,' ',1); % Skip the first line (header)
-                data2 = data2_temp.data;
-                times2{j, k} = data2(:, 1);             % Time data
-                ReceptorActives{j, k} = data2(:, end);  % The last column is ReceptorActive count
-
-                % % Read the bit sequence
-                % bitSequenceFilename = sprintf('%sbitsequence_varNo_%d_varValue_%d_iter_%d.txt', dirname, variableNo, variableValues(j), k);
-                % data3 = importdata(bitSequenceFilename,' ');
-                % bitsequences{j, k} = data3(:, 1);
-            end
-        end
-
-        %%
-        % You can access the data later, for example:
-        received_signal_fin = received_signals{1, 1}; % For variableValues(1) and iteration 1
-        Active_rec_fin = ReceptorActives{1,1}/N;
-
-
-        if movmean_on == 1
-            Active_rec_fin = movmean(Active_rec_fin,[movmean_window 0]); % average over only past values
-            %Active_rec_fin = movmean(Active_rec_fin,movmean_window); % centered average
-        end
-
-
-        %time_axis_smoldyn = 0:TIME_STEP*SAMPLING_PERIOD:length(Active_rec_fin)*TIME_STEP*SAMPLING_PERIOD-1;
-
-        if plot_in_loop
-            figure('Position',[400 400 1200 400]);  % [left bottom width height]
-            plot(t_values, n_values, 'LineWidth', 2);
-            hold on
-            plot(linspace(START_TIME, STOP_TIME, length(Active_rec_fin)), Active_rec_fin,"-")
-            grid on;
-            xlabel('Time (s)');
-            ylabel('<n(t)> - Average Percentage of Bound Receptors');
-            title('Percentage of bound receptors - Numerical vs. Smoldyn');
-
-            figure('Position',[400 400 1200 400]);  % [left bottom width height]
-            plot(linspace(START_TIME, STOP_TIME, length(received_signal_fin)), received_signal_fin,"-")
-            grid on;
-            xlabel('Time (s)');
-            ylabel('Received signal (number of ligands in virtual space) in Smoldyn');
-        end
-
-
-
-
-        %% TRAINING - SMOLDYN DATA
-
-        sampled_matrix_smol = zeros(Nres, num_train_points);
-
-        time_index_smol = START_TIME:TIME_STEP*SAMPLING_PERIOD:STOP_TIME;
-        %time_index_smol = time_index_smol(1:end-1);
-
-        steps_per_symbol_smol = T/TIME_STEP;
-
-        sample_indices_to_be_deleted = [];
-
-        for i = washout1 + 1 : washout1 + num_train_points
-            t_symbol_start_smol = (i - 1) * T + offset;
-            start_idx = find(time_index_smol>= t_symbol_start_smol, 1);  % Find corresponding index
-
-            sample_indices_smol = start_idx  - (memorywindowlength-1) * steps_per_symbol_smol + (0:Nres - 1) * (steps_per_symbol_smol / Nres) * memorywindowlength;
-            sample_indices_smol(sample_indices_smol > length(time_index_smol)) = [];
-
-            if length(sample_indices_smol) >= Nres % NEW - offset control - eliminate the responses that are partially complete due to offset shift
-                sampled_matrix_smol(:, i - washout1) = Active_rec_fin(sample_indices_smol(1:Nres));
-            else
-                %sampled_matrix_smol(:, i - (washout1 + num_train_points + washout2)) = [];
-                sample_indices_to_be_deleted = [sample_indices_to_be_deleted i - washout1];
-
-            end
-
-        end
-
-        sampled_matrix_smol(:, sample_indices_to_be_deleted) = [];
-
-
-        % % Plot sample receptor occupation profiles from the training set
-        % figure;
-        % subplot(2, 2, 1);
-        % plot(sampled_matrix_smol(:, 1));
-        % title('Sample 1');
-        % subplot(2, 2, 2);
-        % plot(sampled_matrix_smol(:, floor(end * 0.4)));
-        % title('Sample 40%');
-        % subplot(2, 2, 3);
-        % plot(sampled_matrix_smol(:, floor(end * 0.8)));
-        % title('Sample 80%');
-        % subplot(2, 2, 4);
-        % plot(sampled_matrix_smol(:, end));
-        % title('Sample End');
-
-        sampled_matrix_smol = [sampled_matrix_smol; ones(1, size(sampled_matrix_smol, 2))];
-        % Transpose sampled_matrix for regression
-        sampled_matrix_smol = sampled_matrix_smol';
-
-        % Compute the regularized linear regression weights W_out
-        W_out_smol = pinv(sampled_matrix_smol' * sampled_matrix_smol + lambda_smol * eye(size(sampled_matrix_smol, 2))) ...
-            * (sampled_matrix_smol' * q_train);
-
-        % Display the calculated weights
-        %disp('Calculated Weights W_out_smol:');
-        %disp(W_out_smol);
-
-        % Calculate the estimated output y_train_hat for training data
-        q_train_hat_smol = sampled_matrix_smol * W_out_smol;
-
-        if plot_in_loop
-            % Plot the original and estimated target values
-            figure('Position',[400 400 1200 400]);  % [left bottom width height]
-            plot(q_train, 'b-o', 'LineWidth', 2, 'MarkerSize', 6);  % Original target values
-            hold on;
-            plot(q_train_hat_smol, 'r-', 'LineWidth', 2);                % Estimated target values
-            xlabel('Index');
-            ylabel('Target and Estimated Values');
-            title('Training Data: Original and Estimated Targets - Smoldyn');
-            legend('Original Target', 'Estimated Target');
-            grid on;
-            set(gca, 'XTick', []);
-        end
-
-        % Compute NRMSE for Training Data - Smoldyn
-        % Ensure q_train_hat and q_train have the same size
-        q_train = q_train(:);         % Ensure column vector
-        q_train_hat_smol = q_train_hat_smol(:); % Ensure column vector
-
-        % Check dimensions
-        if length(q_train_hat_smol) ~= length(q_train)
-            error('The vectors y_train_hat and y_train must be the same length - Smol.');
-        end
-
-        % Calculate RMSE, NRMSE, and NMSE
-        rmse_train_smol = sqrt(mean((q_train_hat_smol(1:end-2) - q_train(1:end-2)).^2));
-        mse_train_smol = mean((q_train_hat_smol(1:end-2) - q_train(1:end-2)).^2);
-        std_q_train_smol = std(q_train(1:end-2));
-        mean_q_train_smol = mean(q_train(1:end-2));
-        var_q_train_smol = mean((q_train(1:end-2) - mean_q_train_smol).^2);
-
-        nrmse_train_smol = rmse_train_smol / std_q_train_smol;
-        nmse_train_smol = mse_train_smol / var_q_train_smol;
-
-        % Display results
-        %disp(['NRMSE (Training / Smoldyn): ', num2str(nrmse_train_smol)]);
-        %disp(['NMSE (Training / Smoldyn): ', num2str(nmse_train_smol)]);
-
-
-        %% 12. Testing Phase - SMOLDYN
-        % Initialize matrix to store sampled values for testing
-        sampled_matrix_test_smol = zeros(Nres, num_test_points);
-
-        sample_indices_to_be_deleted = [];
-
-        % Sampling the number of bound receptors for the testing set
-        for i = washout1 + num_train_points + washout2 + 1 : num_tot_points
-            t_symbol_start_smol = (i - 1) * T + offset;  % Start time with offset
-            start_idx = find(time_index_smol >= t_symbol_start_smol, 1);  % Find corresponding index
-
-            % Generate indices for sampling within the symbol duration
-            sample_indices_smol = start_idx - (memorywindowlength-1) * steps_per_symbol_smol + (0:Nres - 1) * (steps_per_symbol_smol / Nres) * memorywindowlength;
-
-            % Ensure indices are within bounds
-            sample_indices_smol(sample_indices_smol > length(time_index_smol)) = [];
-
-            if length(sample_indices_smol) >= Nres % NEW - offset control - eliminate the responses that are partially complete due to offset shift
-                sampled_matrix_test_smol(:, i - (washout1 + num_train_points + washout2)) = Active_rec_fin(sample_indices_smol(1:Nres));
-            else
-                %sampled_matrix_test_smol(:, i - (washout1 + num_train_points + washout2)) = [];
-                sample_indices_to_be_deleted = [sample_indices_to_be_deleted i - (washout1 + num_train_points + washout2)];
-            end
-        end
-
-        sampled_matrix_test_smol(:, sample_indices_to_be_deleted) = [];
-
-        % % Plot sample receptor occupation profiles from the testing set
-        % figure;
-        % subplot(2, 2, 1);
-        % plot(sampled_matrix_test_smol(:, 1));
-        % title('Sample 1');
-        % subplot(2, 2, 2);
-        % plot(sampled_matrix_test_smol(:, floor(end * 0.4)));
-        % title('Sample 40%');
-        % subplot(2, 2, 3);
-        % plot(sampled_matrix_test_smol(:, floor(end * 0.8)));
-        % title('Sample 80%');
-        % subplot(2, 2, 4);
-        % plot(sampled_matrix_test_smol(:, end));
-        % title('Sample End');
-
-        sampled_matrix_test_smol = [sampled_matrix_test_smol; ones(1, size(sampled_matrix_test_smol, 2))];
-
-        % Transpose for computation
-        sampled_matrix_test_smol = sampled_matrix_test_smol';
-
-        % Calculate the estimated output y_test_hat for testing data
-        q_test_hat_smol = sampled_matrix_test_smol * W_out_smol;
-
-        %% 13. Compute NRMSE for Testing Data
-
-        if movmean_readout_test == 1
-            q_test_hat_smol = movmean(q_test_hat_smol,movmean_readout_test_window); % centered average
-            % q_test_hat_smol = movmean(y_test_hat_smol,[movmean_readout_test_window 0]); % average over only past values
-        end
-
-        % Calculate RMSE, NRMSE, and NMSE
-        rmse_test_smol = sqrt(mean((q_test_hat_smol(1:end-2) - q_test(1:end-2)).^2));
-        mse_test_smol = mean((q_test_hat_smol(1:end-2) - q_test(1:end-2)).^2);
-        std_q_test_smol = std(q_test(1:end-2));
-        mean_q_test_smol = mean(q_test(1:end-2));
-        var_q_test_smol = mean((q_test(1:end-2) - mean_q_test_smol).^2);
-
-        nrmse_test_smol = rmse_test_smol / std_q_test_smol;
-        nmse_test_smol = mse_test_smol / var_q_test_smol;
-
-        % Display results
-        %disp(['NRMSE (Test / Smoldyn): ', num2str(nrmse_test_smol)]);
-        %disp(['NMSE (Test / Smoldyn): ', num2str(nmse_test_smol)]);
-
-        %if plot_in_loop
-        % Plot the original and estimated target values for testing data
-        figure('Position',[400 400 1200 400]);  % [left bottom width height]
-        plot(q_test(1:end-2), 'b-o', 'LineWidth', 2, 'MarkerSize', 6);  % Original target values
-        hold on;
-        plot(q_test_hat_smol(1:end-2), 'r-', 'LineWidth', 2);                        % Estimated target values
-        xlabel('Index');
-        ylabel('Target and Estimated Values');
-        title('Testing Data: Original and Estimated Targets - SMOLDYN');
-        legend('Original Target', 'Estimated Target');
-        grid on;
-        set(gca, 'XTick', []);
-        %end
-
-        %% --- Save results ---
-        nrmse_train_SMOL_array(i1, i2) = nrmse_train_smol;
-        nrmse_test_SMOL_array(i1, i2)  = nrmse_test_smol;
-
-        fprintf('%s=%g, %s=%g -> NRMSE-SMOL(Tr)=%.3g, NRMSE-SMOL(Te)=%.3g\n',...
-            param1_name, val1, param2_name, val2, nrmse_train_smol, nrmse_test_smol);
-        toc
+    sim.occupation = zeros(size(sim.time));
+    for idxT = 2:length(sim.time)
+        c_t = sim.concentration(idxT - 1);
+        n_t = sim.occupation(idxT - 1);
+        dn_dt = config.k_on*(config.N - n_t*config.N)*c_t - config.k_off*n_t*config.N;
+        sim.occupation(idxT) = n_t + (dn_dt/config.N)*config.dt;
     end
-end % END sweeping loops.
+    
+    steps_per_symbol = config.T / config.dt;
+    num_symbols = config.num_tot_points;
+    reservoir_states = zeros(config.Nres, num_symbols);
+    
+    for iSym = 1:num_symbols
+        t_symbol_start = (iSym - 1) * config.T;
+        start_idx = find(sim.time >= t_symbol_start, 1);
+        if isempty(start_idx), continue; end
+        sample_indices_float = start_idx - (config.memorywindowlength-1)*steps_per_symbol + (0:(config.Nres-1))*(steps_per_symbol/config.Nres)*config.memorywindowlength;
+        sample_indices = round(sample_indices_float);
+        if all(sample_indices > 0 & sample_indices <= length(sim.occupation))
+            reservoir_states(:, iSym) = sim.occupation(sample_indices);
+        end
+    end
+end
 
+%--------------------------------------------------------------------------
+function [reservoir_states, success] = load_smoldyn_data(config)
+    % Loads, processes, and samples the pre-generated Smoldyn data.
+    filename = 'allmolecules_varNo_2_varValue_1_iter_1.txt';
+    filepath = fullfile(config.smoldyn_data_dir, filename);
+    if ~exist(filepath, 'file'), reservoir_states = []; success = false; return; end
+    
+    try
+        data_temp = importdata(filepath, ' ', 1);
+        smol_data = data_temp.data;
+        time_vec = smol_data(:, 1);
+        active_receptors = smol_data(:, end) / config.N; % Normalize
+        
+        steps_per_symbol = config.T / config.smol_dt;
+        num_symbols = config.num_tot_points;
+        reservoir_states = zeros(config.Nres, num_symbols);
+        
+        for iSym = 1:num_symbols
+            t_symbol_start = (iSym - 1) * config.T;
+            start_idx = find(time_vec >= t_symbol_start, 1);
+            if isempty(start_idx), continue; end
+            
+            sample_indices_float = start_idx - (config.memorywindowlength-1)*steps_per_symbol + (0:(config.Nres-1))*(steps_per_symbol/config.Nres)*config.memorywindowlength;
+            sample_indices = round(sample_indices_float);
+            
+            if all(sample_indices > 0 & sample_indices <= length(active_receptors))
+                reservoir_states(:, iSym) = active_receptors(sample_indices);
+            end
+        end
+        success = true;
+    catch ME
+        warning('Failed to read or process Smoldyn file "%s": %s', filepath, ME.message);
+        reservoir_states = [];
+        success = false;
+    end
+end
 
+%--------------------------------------------------------------------------
+function filtered_states = apply_signal_filter(reservoir_states, config)
+    % Applies a moving average filter to the reservoir states if enabled.
+    if config.movmean_on && config.movmean_window > 1
+        k = config.movmean_window;
+        filtered_states = movmean(reservoir_states, [k-1 0], 2);
+    else
+        filtered_states = reservoir_states; % No filtering
+    end
+end
 
-%%
+%--------------------------------------------------------------------------
+function W_out = train_readout(reservoir_states, train_target, config)
+    % Generic training function for both numerical and stochastic models.
+    train_states = reservoir_states(:, config.washout1+1 : config.washout1+config.num_train_points);
+    
+    valid_cols = any(train_states, 1);
+    train_states = train_states(:, valid_cols);
+    y_train = train_target(valid_cols);
+    
+    X_train = [train_states; ones(1, size(train_states, 2))];
+    
+    current_lambda = config.lambda; 
+    if isfield(config, 'lambda_smol'), current_lambda = config.lambda_smol; end
+    
+    W_out = pinv(X_train * X_train' + current_lambda * eye(size(X_train, 1))) * (X_train * y_train(:));
+end
 
-%% ========== 2D Heatmaps (Param1 on X, Param2 on Y) ==========
-[X, Y] = meshgrid(param1_values, param2_values);  % X: param1, Y: param2
+%--------------------------------------------------------------------------
+function [nrmse_train, nrmse_test, y_test_hat] = test_readout(W_out, reservoir_states, narma_data, config)
+    % Generic testing function for both models.
+    train_indices = config.washout1+1 : config.washout1+config.num_train_points;
+    train_states = reservoir_states(:, train_indices);
+    valid_cols_train = any(train_states, 1);
+    X_train = [train_states(:, valid_cols_train); ones(1, sum(valid_cols_train))];
+    y_train_hat = X_train' * W_out;
+    nrmse_train = sqrt(mean((y_train_hat - narma_data.train_target(valid_cols_train)).^2)) / std(narma_data.train_target(valid_cols_train));
+    
+    test_indices = config.wheretostarttest+1 : config.wheretostarttest + config.num_test_points;
+    test_states = reservoir_states(:, test_indices);
+    valid_cols_test = any(test_states, 1);
+    X_test = [test_states(:, valid_cols_test); ones(1, sum(valid_cols_test))];
+    y_test_hat = X_test' * W_out;
+    y_test_true = narma_data.test_target(valid_cols_test);
+    nrmse_test = sqrt(mean((y_test_hat - y_test_true).^2)) / std(y_test_true);
+end
 
-figureOpts = {'LineColor','none','LevelStepMode','auto'};
+%--------------------------------------------------------------------------
+function results = initialize_results_struct(nP1, nP2)
+    % Creates a struct to hold all results, pre-allocating with NaNs.
+    results.nrmse_test_num   = NaN(nP1, nP2);
+    results.nrmse_test_smol  = NaN(nP1, nP2);
+end
 
-% 1) NRMSE(NUM)
-figure('Name','NRMSE Heatmap for Numerical Model');
-contourf(X, Y, nrmse_test_NUM_array', 20, figureOpts{:});
-shading interp; colorbar;
-colormap(flipud(parula));
-if useLogX, set(gca,'XScale','log'); end
-if useLogY, set(gca,'YScale','log'); end
-xlabel(param1_name);
-ylabel(param2_name);
-title('NRMSE Heatmap for Numerical Model');
+%--------------------------------------------------------------------------
+function plot_sweep_results(results, config)
+    % Generates all 2D heatmap plots from the final results.
+    [X, Y] = meshgrid(config.param1_values, config.param2_values);
+    plot_heatmap(X, Y, results.nrmse_test_num', 'NRMSE (Test) - Numerical Model', config);
+    plot_heatmap(X, Y, results.nrmse_test_smol', 'NRMSE (Test) - Stochastic (Smoldyn) Model', config);
+end
 
-% 2) NRMSE(SMOL)
-figure('Name','NRMSE Heatmap for Stochastic Model');
-contourf(X, Y, nrmse_test_SMOL_array', 20, figureOpts{:});
-shading interp; colorbar;
-colormap(flipud(parula));
-if useLogX, set(gca,'XScale','log'); end
-if useLogY, set(gca,'YScale','log'); end
-xlabel(param1_name);
-ylabel(param2_name);
-title('NRMSE Heatmap for Stochastic Model');
+%--------------------------------------------------------------------------
+function plot_heatmap(X, Y, Z, title_str, config)
+    % Generic function to create a heatmap.
+    figure('Name', title_str);
+    contourf(X, Y, Z, 20, 'LineColor', 'none');
+    shading interp;
+    cb = colorbar;
+    colormap(flipud(parula));
+    ylabel(cb, 'NRMSE');
+    
+    if ~isempty(config.param1_values) && min(config.param1_values)>0 && max(config.param1_values)/min(config.param1_values) > 50, set(gca, 'XScale', 'log'); end
+    if ~isempty(config.param2_values) && min(config.param2_values)>0 && max(config.param2_values)/min(config.param2_values) > 50, set(gca, 'YScale', 'log'); end
+    
+    xlabel(strrep(config.param1_name, '_', ' '));
+    ylabel(strrep(config.param2_name, '_', ' '));
+    title(title_str);
+end
 
-%figure; plot(param2_values, nrmse_test_SMOL_array)
+%--------------------------------------------------------------------------
+function plot_interim_results(sim, narma_data, num_results, smol_results, run_info)
+    % Plots key results from a single run for debugging.
+    fig_title = sprintf('Interim Results (Run %d/%d): %s=%g, %s=%g', ...
+        run_info.current_run, run_info.total_runs, ...
+        run_info.p1_name, run_info.p1_val, ...
+        run_info.p2_name, run_info.p2_val);
+    
+    figure('Name', fig_title, 'NumberTitle', 'off');
+    
+    % Plot 1: Compare Numerical and Stochastic Reservoir States
+    subplot(2,1,1);
+    plot(sim.time, sim.occupation, 'b-', 'DisplayName', 'Numerical n(t)');
+    hold on;
+    if ~isempty(smol_results.states_raw)
+        smol_time = 0:run_info.smol_dt:(size(smol_results.states_raw, 2)-1)*run_info.smol_dt;
+        plot(smol_time, smol_results.states_raw(1,:), 'r-', 'LineWidth', 0.5, 'DisplayName', 'Stochastic n(t) (Node 1)');
+    end
+    grid on; title('Reservoir Dynamics'); xlabel('Time (s)'); legend;
 
-
-%% Appendix
-
-% (For Mac users) Use the following if MATLAB can't run Smoldyn
-% This adds the Smoldyn path to the set of default paths
-% setenv('PATH', getenv('PATH')+":/usr/local/bin")
-% system('echo $PATH')
-
-
+    % Plot 2: Compare Final Predictions
+    subplot(2,1,2);
+    test_target_valid = narma_data.test_target(1:length(num_results.y_test_hat));
+    plot(test_target_valid, 'k-', 'LineWidth', 2, 'DisplayName', 'True Target');
+    hold on;
+    plot(num_results.y_test_hat, 'b--', 'LineWidth', 1.5, 'DisplayName', 'Numerical Prediction');
+    if ~isempty(smol_results.y_test_hat)
+        plot(smol_results.y_test_hat, 'r--', 'LineWidth', 1.5, 'DisplayName', 'Stochastic Prediction');
+    end
+    grid on; title('Test Set Predictions'); xlabel('Sample Index'); ylabel('Value'); legend;
+end
