@@ -73,8 +73,8 @@ This workflow evaluates the reservoir's ability to predict the future values of 
     * **Output**: Creates a data directory (e.g., `MG_5000_T1_koff1/`) filled with `.txt` simulation results.
 
 3.  **Analysis Scripts (Choose one):**
-    * `NewMG_Only_Numerical_Sweep.m` (Fast Exploration): Sweeps parameters using only the fast deterministic mean-field model. (Approx. 5-8 hours runtime).
-    * `NewMG_Stochastic_Sweep.m` (Final Comparison): The main analysis hub for this task. It compares the performance of the deterministic model against pre-computed Smoldyn data. (Approx. 30 mins per run; a full 10x10 sweep can take ~25-30 hours).
+    * `NewMG_Only_Numerical_Sweep.m` OR improved version `mg_numerical_analysis.m` (Fast Exploration): Sweeps parameters using only the fast deterministic mean-field model. (Approx. 5-8 hours runtime).
+    * `NewMG_Stochastic_Sweep.m` OR improved version `mg_stochastic_sweep.m` (Final Comparison): The main analysis hub for this task. It compares the performance of the deterministic model against pre-computed Smoldyn data. (Approx. 30 mins per run; a full 10x10 sweep can take ~25-30 hours).
 
 ---
 
@@ -88,8 +88,8 @@ This workflow evaluates the reservoir on the NARMA10 benchmark, which tests for 
     * **Output**: Creates a data directory (e.g., `NARMA_5000_T1_koff1/`).
 
 2.  **Analysis Scripts (Choose one):**
-    * `NARMA10_Only_Numerical_Sweep.m` (Fast Exploration): Sweeps parameters using the fast deterministic model. (Approx. 5-8 hours runtime).
-    * `NARMA_Stochastic_Sweep.m` (Final Comparison): The main analysis hub for this task, comparing deterministic and stochastic results. (Approx. 30 mins per run; a full sweep can take ~24 hours).
+    * `NARMA10_Only_Numerical_Sweep.m` OR improved version `narma_numerical_sweep.m`(Fast Exploration): Sweeps parameters using the fast deterministic model. (Approx. 5-8 hours runtime).
+    * `NARMA_Stochastic_Sweep.m` OR improved version `narma_stochastic_sweep.m`(Final Comparison): The main analysis hub for this task, comparing deterministic and stochastic results. (Approx. 30 mins per run; a full sweep can take ~24 hours).
 
 ---
 
