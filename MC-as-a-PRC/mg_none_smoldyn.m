@@ -2,6 +2,7 @@
 % Code to generate Smoldyn data given the MC system settings and input
 % sequence (in this case MG Series generated beforehand)
 % MODIFIED to use the Bayesian Optimized hyperparameters for the baseline MG task.
+% -- VERSION UPDATED WITH PARAMETERS FROM ITERATION 74 --
 %%
 
 
@@ -11,16 +12,17 @@ clear       % Clear all variables from the workspace
 
 %% 1. Parameter Setup
 % The parameters below have been updated with the best configuration found
-% by the Bayesian Optimizer for the baseline ('none') Mackey-Glass task.
+% by the Bayesian Optimizer from Iteration 74, selected for its balance of
+% high performance and physical realism for Smoldyn simulations.
 
 % Receptor and binding parameters
 N = 500;                % Total number of receptors at the receiver
-k_on = 6.8778e-18;     % Binding rate constant (1/(M*s)) -- BAYESIAN OPTIMIZED
-k_off = 9.616;         % Unbinding rate constant (1/s) -- BAYESIAN OPTIMIZED
+k_on = 3.9338e-18;      % Binding rate constant (1/(M*s)) -- UPDATED from Iteration 74
+k_off = 8.6418;         % Unbinding rate constant (1/s) -- UPDATED from Iteration 74
 KD = k_off / k_on;      % Dissociation constant
 
 % Time parameters
-T = 0.99696;           % Symbol duration (seconds) -- BAYESIAN OPTIMIZED
+T = 1.9288;             % Symbol duration (seconds) -- UPDATED from Iteration 74
 
 % Data lengths (using standard values from optimization script config)
 washout1 = 500;
@@ -31,12 +33,12 @@ washout2 = wheretostarttest - (washout1 + num_train_points);
 num_tot_points = washout1 + washout2 + num_train_points + num_test_points;
 
 % Communication channel parameters
-distance = 6.6544e-06;   % Distance (m) -- BAYESIAN OPTIMIZED
-D = 3.4772e-11;        % Diffusion coefficient (m^2/s) -- BAYESIAN OPTIMIZED
+distance = 6.4287e-06;  % Distance (m) -- UPDATED from Iteration 74
+D = 3.9627e-11;       % Diffusion coefficient (m^2/s) -- UPDATED from Iteration 74
 
 % Input normalization parameters
-N_min = 100;           % Minimum value for input normalization
-N_max = 10396;         % Maximum value for input normalization -- BAYESIAN OPTIMIZED
+N_min = 100;          % Minimum value for input normalization
+N_max = 16838;        % Maximum value for input normalization -- UPDATED from Iteration 74
 
 % Step size control
 dt = 0.001;  % Time step for deterministic/numerical analysis %fixed
@@ -93,7 +95,7 @@ n_values = n_values / N;
 %% ==========================================================
 %                  SMOLDYN SIMULATION SETUP
 % ===========================================================
-fprintf('Setting up Smoldyn simulation with optimized parameters...\n');
+fprintf('Setting up Smoldyn simulation with optimized parameters from Iteration 74...\n');
 tic;
 
 %% Set Simulation Parameters
@@ -109,7 +111,7 @@ DIFFRECEPTORACT = 0;
 % Simulation time parameters
 START_TIME = 0;
 BIT_INTERVAL = T;
-STOP_TIME = START_TIME + length(N_i)*BIT_INTERVAL; 
+STOP_TIME = START_TIME + length(N_i)*BIT_INTERVAL;
 disp(['Smoldyn Simulation Stop Time: ', num2str(STOP_TIME)]);
 TIME_STEP = 0.01;
 SAMPLING_PERIOD = 1;
@@ -127,9 +129,8 @@ input_time_points = START_TIME:BIT_INTERVAL:STOP_TIME-eps*1e10;
 generateSimConfig(N_i, input_time_points);
 
 %% Create Directory for Simulation Output
-dirname = sprintf('MG_Optimized_Baseline_%s/', datestr(now,'mm-dd-yyyy--HH-MM-SS'));
-mkdir(dirname);
-copyfile('MCpointTXsphRX_generated.txt', dirname);
+dirname = sprintf('MG_Optimized_Iter74_%s/', datestr(now,'mm-dd-yyyy--HH-MM-SS'));
+mkdir(dirname);copyfile('MCpointTXsphRX_generated.txt', dirname);
 
 %% Run Smoldyn Simulation
 % Note: Using '-w' to visualize, change to '-wt' for faster non-visual run
@@ -149,7 +150,7 @@ command = sprintf(['smoldyn %sMCpointTXsphRX_generated.txt -wt -s ', ...
     '--define BOUNDARYLENGTH=%d ', ...
     '--define TXPOSITION=%d ', ...
     '--define RXRADIUS=%d ', ...
-    '--define RXRECEPTIONSPACETHICKNESS=%d ', ...            
+    '--define RXRECEPTIONSPACETHICKNESS=%d ', ...
     '--define SAMPLING_PERIOD=%d '], ...
     dirname, 1, KON, KOFF, DIFFMESSENGER, ...
     DIFFRECEPTOR, DIFFRECEPTORACT, START_TIME, STOP_TIME, TIME_STEP, BIT_INTERVAL, numRECEPTOR, ...
@@ -172,7 +173,7 @@ plot(linspace(START_TIME, STOP_TIME, length(Active_rec_fin)), Active_rec_fin, '-
 grid on;
 xlabel('Time (s)');
 ylabel('Occupation Fraction <n(t)>');
-title('Optimized Parameters: Deterministic vs. Stochastic Response');
+title('Optimized Parameters (Iter 74): Deterministic vs. Stochastic Response');
 legend;
 
 toc;
