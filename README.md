@@ -37,7 +37,7 @@ This workflow evaluates the reservoir's ability to predict the future values of 
 1.  **`createMGseries.m`**
     * **Purpose:** Generates the Mackey-Glass time-series data.
     * **Note:** Run this first to create the `.mat` data file.
-2.  **`plot_mg_numerical_analysis.m` or `mg_numerical_analysis.m`**
+2.  **`plot_mg_numerical_analysis.m`** or **`mg_numerical_analysis.m`**
     * **Purpose:** Sweeps parameters using the fast deterministic model to analyze performance. The `plot_` version includes in-loop visualizations.
 3.  **(Optional) `NewMG_Generate_Smoldyn_Data.m`**
     * **Purpose:** Runs a full Smoldyn simulation to generate high-fidelity reservoir states for stochastic analysis.
@@ -82,6 +82,8 @@ This workflow tests the reservoir's ability to perform a complex nonlinear mappi
     * **Purpose:** Performs a parameter sweep using the deterministic model.
 3.  **`optimize_sine_hyperparams_bayesopt.m`**
     * **Purpose:** Uses Bayesian optimization to efficiently find the optimal biophysical parameters for this task.
+4.  **(Optional) `sine_smoldyn_data.m`**
+    * **Purpose:** Runs a Smoldyn simulation with optimized parameters for the sine-to-square task.
 
 ---
 #### Workflow 5: Sine-to-Sawtooth Transformation Task 〰️📈
@@ -97,7 +99,19 @@ This workflow evaluates the performance on converting a sine wave to a sawtooth 
 ---
 ### Combined Forecasting & Nonlinear Transformation Tasks
 
-#### Workflow 6: Wiener-Hammerstein (WH) Prediction Task ⚙️
+#### Workflow 6: Mackey-Glass Cubed Prediction Task 📈³
+This workflow evaluates the reservoir on a task that requires both memory and nonlinearity by predicting the cube of a future Mackey-Glass series value.
+
+**Scripts & Execution Order:**
+1.  **`createMGcubedseries.m`**
+    * **Purpose:** Generates the Mackey-Glass input and the cubed future target data.
+2.  **`optimize_mg_cubed_hyperparams_bayesopt.m`**
+    * **Purpose:** Uses Bayesian optimization to find the optimal biophysical parameters for this combined task.
+3.  **(Optional) `mg_cubed_smoldyn_iter91.m`**
+    * **Purpose:** Runs a Smoldyn simulation with optimized parameters for the Mackey-Glass Cubed task.
+
+---
+#### Workflow 7: Wiener-Hammerstein (WH) Prediction Task ⚙️
 This workflow evaluates the reservoir on a benchmark that requires a combination of both memory and nonlinear transformation capabilities.
 
 **Scripts & Execution Order:**
@@ -112,7 +126,7 @@ This workflow evaluates the reservoir on a benchmark that requires a combination
 ---
 ### General Analysis & Optimization
 
-#### Workflow 7: Information Processing Capacity (IPC) Analysis 📊
+#### Workflow 8: Information Processing Capacity (IPC) Analysis 📊
 This workflow provides a task-independent characterization of the reservoir's computational power.
 
 **Scripts & Execution Order:**
@@ -122,7 +136,7 @@ This workflow provides a task-independent characterization of the reservoir's co
     * **Output:** Heatmap plots showing the Total IPC.
 
 ---
-#### Workflow 8: Bayesian Hyperparameter Optimization 🎯
+#### Workflow 9: Bayesian Hyperparameter Optimization 🎯
 This workflow uses Bayesian optimization to find the optimal hyperparameters for any given task.
 
 **Scripts:**
@@ -130,13 +144,18 @@ This workflow uses Bayesian optimization to find the optimal hyperparameters for
 * `optimize_narma_hyperparams_bayesopt.m`: For NARMA10.
 * `optimize_lorenz_hyperparams_bayesopt.m`: For Lorenz-63.
 * `optimize_wh_hyperparams_bayesopt.m`: For Wiener-Hammerstein.
-* *(See Nonlinear Mapping workflows for other task-specific optimization scripts).*
+* *(See Nonlinear Mapping and Combined workflows for other task-specific optimization scripts).*
 
 ---
-#### Workflow 9: Kathy Ludge Post-Processing Analysis 🛠️
-This workflow applies advanced post-processing methods to the reservoir's output for improved performance, particularly on noisy stochastic data.
+#### Workflow 10: Kathy Ludge Post-Processing & Stochastic Analysis 🛠️
+This workflow applies advanced post-processing methods to the reservoir's output for improved performance, particularly on noisy stochastic data. It also includes scripts for comprehensive analysis comparing deterministic and stochastic model outputs.
 
-**Scripts:**
+**Post-Processing Scripts:**
 * **`kl_mg_numerical_analysis.m`** and **`kl_mg_stochastic_sweep.m`**: For the Mackey-Glass task.
-* **`kl_narma_numerical_analysis.m`** and **`kl_narma_stochastic_sweep.m`**: For the NARMA10 task.
-* **`optimize_kl_mg_hyperparams.m`** and **`optimize_kl_narma_hyperparams.m`**: For optimizing the hyperparameters of the post-processing methods.
+* **`kl_narma_numerical_analysis.m`**: For the NARMA10 task.
+* **`optimize_kl_mg_hyperparams.m`** and **`optimize_kl_narma_hyperparams.m`**: For optimizing the hyperparameters of the post-processing methods themselves.
+
+**Stochastic Analysis & Comparison Scripts:**
+* **`mg_analyze_and_compare_runs_filtered.m`**: Compares deterministic, raw stochastic, and filtered stochastic results for the Mackey-Glass task.
+* **`mg_cubed_analyze_and_compare_runs_filtered.m`**: Provides the same comparison for the Mackey-Glass Cubed task.
+* **`sine_analyze_and_compare_runs_filtered.m`**: Offers the same analysis for the Sine-to-Square transformation task.
