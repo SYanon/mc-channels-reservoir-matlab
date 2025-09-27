@@ -159,3 +159,15 @@ This workflow applies advanced post-processing methods to the reservoir's output
 * **`mg_analyze_and_compare_runs_filtered.m`**: Compares deterministic, raw stochastic, and filtered stochastic results for the Mackey-Glass task.
 * **`mg_cubed_analyze_and_compare_runs_filtered.m`**: Provides the same comparison for the Mackey-Glass Cubed task.
 * **`sine_analyze_and_compare_runs_filtered.m`**: Offers the same analysis for the Sine-to-Square transformation task.
+---
+#### Workflow 11: Parallel Plots and CrissCross Validation
+This workflow uses the `run_all_tasks.m` and the `run_criss_cross_validation.m` files respectively.
+
+---
+---
+#### Workflow 12: Filter sweep size per task
+This workflow plots the nrmses vs filter size for selected smoldyn datasets as per task selected.
+* **`mg_sweep_filter_window.m`**: For the Mackey-Glass task.
+* **`mg_cubed_sweep_filter_window.m`**: For the Mackey-Glass Cubed task.
+* **`sine_sweep_filter_window.m`**: For the Sine-to-Square transformation task.
+---
